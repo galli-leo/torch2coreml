@@ -153,6 +153,49 @@ def _convert_concat_table(builder, name, layer, input_names, output_names):
         result_outputs += l_outputs
     return result_outputs
 
+def _convert_depth_concat(builder, name, layer, input_names, output_names):
+    #Each DepthConcat layer has multiple sub sequential nets wich in itself have some layers
+    nets = layer.modules
+    base_name = output_names[0]
+    max_size = (0,0) #Some layers have smaller sizes so we need to pad them. Thus we keep track of the max size
+    net_num = ord('a') #We label the sub nets with lowercase alphabets
+    concat_inputs = [] #We need to keep track of the outputs of all subnets
+    for net in nets:
+        net_name = base_name + chr(net_num) + "_"
+        layer_num = 1
+        last_name = input_names[0]
+        for l in net.modules:
+            l_name = net_name + _torch_typename(l) + "_" + str(layer_num)
+
+            _convert_layer(builder, l_name, l, [last_name], [l_name])
+            size = l.output.shape
+            last_name = l_name
+            layer_num += 1
+
+        #Setting max size
+        if size[2] > max_size[0]:
+            max_size = (size[2], size[3])
+
+        #Check padding
+        if size[2] < max_size[0]:
+            #ohoh we need some padding!
+            diff = max_size[0] - size[2]
+            right_bottom = diff / 2
+            left_top = diff / 2
+            if diff % 2 != 0:
+                right_bottom += 1
+
+            padding_name = net_name + "Padding"
+            builder.add_padding(padding_name, left=left_top, right=right_bottom, top=left_top, bottom=right_bottom,
+            input_name = last_name, output_name=padding_name)
+            last_name = padding_name
+        net_num += 1
+        concat_inputs.append(last_name)
+
+    builder.add_elementwise(name = name, input_names = concat_inputs,
+        output_name = output_names[0], mode = "CONCAT")
+    return output_names
+
 
 def _convert_batch_norm(builder, name, layer, input_names, output_names):
     epsilon = layer.eps
@@ -215,11 +258,15 @@ def _convert_pooling(builder, name, layer, input_names, output_names):
     elif typename == 'SpatialAveragePooling':
         layer_type = 'AVERAGE'
         exclude_pad_area = not layer.count_include_pad
+    elif typename == 'SpatialLPPooling':
+        layer_type = 'L2' #LP pooling with pnorm = 2 is the same as L2 Pooling
     else:
         raise TypeError("Unknown type '{}'".format(typename,))
 
     k_h, k_w = layer.kH, layer.kW
-    pad_h, pad_w = layer.padH, layer.padW
+    pad_h, pad_w = 0, 0
+    if layer_type != "L2":
+        pad_h, pad_w = layer.padH, layer.padW
     d_h, d_w = layer.dH, layer.dW
 
     builder.add_pooling(
@@ -266,6 +313,7 @@ def _convert_linear(builder, name, layer, input_names, output_names):
 
 def _convert_view(builder, name, layer, input_names, output_names):
     shape = tuple(layer.size)
+
     if len(shape) == 1 or (len(shape) == 2 and shape[0] == 1):
         builder.add_flatten(
             name=name,
@@ -436,12 +484,21 @@ def _convert_split_table(builder, name, layer, input_names, output_names):
 
     return output_names
 
+def _convert_lrn(builder, name, layer, input_names, output_names):
+    builder.add_lrn(name, input_name=input_names[0], output_name=output_names[0], alpha=layer.alpha,
+        beta=layer.beta, local_size=layer.size, k = layer.k)
+    return output_names
+
+def _convert_normalize(builder, name, layer, input_names, output_names):
+    builder.add_l2_normalize(name, input_name=input_names[0], output_name=output_names[0], epsilon = layer.eps)
+    return output_names
 
 _TORCH_LAYER_REGISTRY = {
     'Sequential': _convert_sequential,
     'SpatialConvolution': _convert_convolution,
     'ELU': _convert_elu,
     'ConcatTable': _convert_concat_table,
+    'DepthConcat': _convert_depth_concat,
     'SpatialBatchNormalization': _convert_batch_norm,
     'Identity': _convert_identity,
     'CAddTable': _convert_cadd_table,
@@ -451,7 +508,9 @@ _TORCH_LAYER_REGISTRY = {
     'ReLU': _convert_relu,
     'SpatialMaxPooling': _convert_pooling,
     'SpatialAveragePooling': _convert_pooling,
+    'SpatialLPPooling': _convert_pooling,
     'View': _convert_view,
+    'Reshape': _convert_view,
     'Linear': _convert_linear,
     'Tanh': _convert_tanh,
     'MulConstant': _convert_mul_constant,
@@ -459,7 +518,9 @@ _TORCH_LAYER_REGISTRY = {
     'Narrow': _convert_narrow,
     'SpatialReflectionPadding': _convert_reflection_padding,
     'SpatialUpSamplingNearest': _convert_upsampling_nearest,
-    'SplitTable': _convert_split_table
+    'SplitTable': _convert_split_table,
+    'SpatialCrossMapLRN': _convert_lrn,
+    'Normalize': _convert_normalize,
 }
 
 

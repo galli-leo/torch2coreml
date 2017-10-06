@@ -119,6 +119,7 @@ def _set_deprocessing(is_grayscale,
 
 def convert(model,
             input_shapes,
+            output_shapes=None,
             input_names=['input'],
             output_names=['output'],
             mode=None,
@@ -183,7 +184,7 @@ def convert(model,
     _get_layer_converter_fn.unknown_converter_fn = unknown_layer_converter_fn
 
     if isinstance(model, basestring):
-        torch_model = load_lua(model)
+        torch_model = load_lua(model, unknown_classes=True)
     elif isinstance(model, torch.legacy.nn.Sequential):
         torch_model = model
     else:
@@ -192,7 +193,7 @@ def convert(model,
             with torch.legacy.nn.Sequential module as root"
         )
 
-    torch_model.evaluate()
+    #torch_model.evaluate()
 
     if not isinstance(input_shapes, list):
         raise TypeError("Input shapes should be a list of tuples.")
@@ -206,10 +207,11 @@ def convert(model,
             "Input names count must be equal to input shapes count"
         )
 
-    output_shapes = _infer_torch_output_shapes(
-        torch_model,
-        input_shapes
-    )
+    if output_shapes == None:
+        output_shapes = _infer_torch_output_shapes(
+            torch_model,
+            input_shapes
+        )
 
     if len(output_shapes) != len(output_names):
         raise ValueError(
